@@ -1,0 +1,203 @@
+#!/bin/bash
+
+################################################################################################################################
+#
+# Rebuild indexes.
+#
+#
+# Input: -d Oracle SID
+#        -s rebuilds all APP schema indexes
+#        -f rebuilds all non system indexes
+#        -p rebuilds indexes for tables with $REBUILD_PCT_THRES% rows deleted or more than $REBUILD_NB_THRES rows deleted
+#        -u rebuild unusable indexes
+#        -q quiet (no email notification)
+#
+#
+#
+# Created: 29/01/2015 AET
+# Modified:
+#
+################################################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=XBUILD
+OPTYPE=PARTIAL
+NOTIF=Y
+
+usage() {
+echo "Usage: xrebuild -d <Oracle SID> [-spfu] [-q]";
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit
+   fi
+}
+
+unusable() {
+   echo "Rebuilding unusable indexes..." | tee -a $LOG
+   echo "set lines 500 pages 0" > $TMP
+   echo "SELECT 'ALTER INDEX \"' || OWNER || '\".\"' || INDEX_NAME || '\" REBUILD NOLOGGING;'" >> $TMP
+   echo "FROM DBA_INDEXES" >> $TMP
+   echo "WHERE STATUS <> 'VALID'" >> $TMP
+   echo "AND PARTITIONED='NO'" >> $TMP
+   echo "AND INDEX_TYPE='NORMAL';" >> $TMP
+   echo exit >> $TMP
+}
+
+schema() {
+   echo "Rebuilding indexes for schema $APP_SCHEMA..." | tee -a $LOG
+   echo "set lines 500 pages 0" > $TMP
+   echo "SELECT 'ALTER INDEX \"' || OWNER || '\".\"' || INDEX_NAME || '\" REBUILD NOLOGGING;'" >> $TMP
+   echo "FROM DBA_INDEXES" >> $TMP
+   echo "WHERE OWNER = $APP_SCHEMA" >> $TMP
+   echo "AND PARTITIONED='NO'" >> $TMP
+   echo "AND INDEX_TYPE='NORMAL'" >> $TMP
+   echo "AND rownum <= $MAX_IDX;" >> $TMP
+   echo exit >> $TMP
+}
+
+full() {
+   echo "Rebuilding non system indexes..." | tee -a $LOG
+   echo "set lines 500 pages 0" > $TMP
+   echo "SELECT 'ALTER INDEX \"' || OWNER || '\".\"' || INDEX_NAME || '\" REBUILD NOLOGGING;'" >> $TMP
+   echo "FROM DBA_INDEXES" >> $TMP
+   echo "WHERE OWNER NOT LIKE '%SYS%'" >> $TMP
+   echo "AND PARTITIONED='NO'" >> $TMP
+   echo "AND INDEX_TYPE='NORMAL'" >> $TMP
+   echo "AND rownum <= $MAX_IDX;" >> $TMP
+   echo exit >> $TMP
+}
+
+partial() {
+   echo "Rebuilding indexes for tables with many DELETES..." | tee -a $LOG
+   echo "set lines 500 pages 0" > $TMP
+   echo "SELECT 'ALTER INDEX \"' || b.OWNER || '\".\"' || b.INDEX_NAME || '\" REBUILD NOLOGGING;'" >> $TMP
+   echo "from dba_tab_modifications a, dba_indexes b, dba_tab_statistics c" >> $TMP
+   echo "where a.TABLE_NAME = b.TABLE_NAME" >> $TMP
+   echo "and a.TABLE_NAME = c.TABLE_NAME" >> $TMP
+   echo "AND c.NUM_ROWS >0" >> $TMP
+   echo "and (a.DELETES/c.NUM_ROWS > $REBUILD_PCT_THRES OR a.DELETES > $REBUILD_NB_THRES OR b.BLEVEL >3)" >> $TMP
+   echo "and b.index_type = 'NORMAL'" >> $TMP
+   echo "AND b.PARTITIONED='NO'" >> $TMP
+   echo "AND INDEX_TYPE='NORMAL'" >> $TMP
+   echo "and a.table_owner NOT LIKE '%SYS%'" >> $TMP
+   echo "AND rownum <= $MAX_IDX;" >> $TMP
+   echo exit >> $TMP
+
+}
+
+rebuild() {
+   $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $TMP_SQL
+   echo "set lines 500 echo on" > $TMP
+   grep "ALTER INDEX" $TMP_SQL >> $TMP
+   echo "exit" >> $TMP
+
+   $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP >> $LOG
+   echo "Done." | tee -a $LOG
+}
+
+notify() {
+   echo > $MAIL_TMP
+   head -n 2 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep Rebuilding $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   tail -n 50 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo "See logfile $LOG for more details." >> $MAIL_TMP
+
+   echo >> $LOG
+   if [ $NOTIF = 'Y' ]; then
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Index Rebuild notification]" -t $MAIL_TMP | tee -a $LOG
+   fi
+}
+
+# Argument parsing
+while getopts :d:spfqu arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  f)
+    OPTYPE=FULL
+    ;;
+  p)
+    OPTYPE=PARTIAL
+    ;;
+  s)
+    OPTYPE=SCHEMA
+    ;;
+  u)
+    OPTYPE=UNUSABLE
+    ;;
+  q)
+    NOTIF=N
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Build SQL script
+TMP_SQL=$DIR_SCRIPTS/tmp/${PROG}_${OPTYPE}_${SID}.log
+
+# REBUILD ONLINE option is not available in Standard Edition
+case $OPTYPE in
+ UNUSABLE|unusable)
+  unusable
+  ;;
+ FULL|full)
+  full
+  ;;
+ SCHEMA|schema)
+  schema
+  ;;
+ PARTIAL|partial)
+  partial
+  ;;
+ *)
+  echo "Invalid option. Aborting"
+  exit
+  ;;
+esac
+
+echo "exit" >> $TMP
+
+
+# Execute index rebuild
+rebuild
+log_tail 
+
+# Send notification mail
+if [ $NOTIF = 'Y' ]; the
+ notify
+fi
+exit

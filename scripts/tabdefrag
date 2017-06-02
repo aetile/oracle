@@ -1,0 +1,167 @@
+#!/bin/bash
+
+################################################################################################################################
+#
+# Reorganize fragmentd tables.
+#
+#
+# Input: -d Oracle SID
+#        -s reorganize APP schema fragmented tables
+#        -f reorganize non system tables
+#        -a reorganize all tables, not taking into account max number of tables limit
+#        -q quiet (no email notification)
+#
+#
+#
+# Created: 29/01/2015 AET
+# Modified:
+#
+################################################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=REORG
+OPTYPE=SCHEMA
+NOTIF=Y
+MAX=-1
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+usage() {
+echo "Usage: tabdefrag -d <Oracle SID> [-sfa] [-q]";
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ $MAX -eq 0 ]; then
+    MAX_TABLES=0
+   fi
+}
+
+defrag() {
+   TMP_SQL=$DIR_SCRIPTS/tmp/${PROG}_${OPTYPE}_${SID}.log
+
+   echo "set lines 100 pages 0 trimout on trims on" > $TMP
+   echo "select 'ALTER TABLE \"'|| a.OWNER ||'\".\"'|| a.TABLE_NAME|| '\" ENABLE ROW MOVEMENT;'," >> $TMP
+   echo "'ALTER TABLE \"'|| a.OWNER ||'\".\"'|| a.TABLE_NAME|| '\" SHRINK SPACE COMPACT;'," >> $TMP
+   echo "'ALTER TABLE \"'|| a.OWNER ||'\".\"'|| a.TABLE_NAME|| '\" DISABLE ROW MOVEMENT;'," >> $TMP
+   echo "'ALTER TABLE \"'|| a.OWNER ||'\".\"'|| a.TABLE_NAME|| '\" MOVE NOLOGGING;'" >> $TMP
+   echo "from dba_tables a" >> $TMP
+   echo "where a.TEMPORARY='N'" >> $TMP
+   echo "and a.IOT_TYPE is null" >> $TMP
+   echo "and a.table_name not in (" >> $TMP
+   echo " select TABLE_NAME" >> $TMP
+   echo " from dba_tab_columns" >> $TMP
+   echo " where OWNER= a.owner and DATA_TYPE like 'LONG%')" >> $TMP
+   echo "and a.blocks >0" >> $TMP
+   echo "and trunc(((a.num_rows*a.avg_row_len/8192) - a.empty_blocks)/a.blocks) < 0.8" >> $TMP
+
+   # REBUILD ONLINE option is not available in Standard Edition
+   case $OPTYPE in
+    FULL)
+     echo "Reorganizing tables..." | tee -a $LOG
+     echo "and a.owner NOT LIKE '%SYS%' and a.owner <> 'XDB'" >> $TMP
+     ;;
+    SCHEMA)
+     echo "Reorganizing tables for schema $APP_SCHEMA..." | tee -a $LOG
+     echo "and a.owner = '${APP_SCHEMA}'" >> $TMP
+     ;;
+    *)
+     echo "Invalid option. Aborting"
+     exit
+     ;;
+   esac
+
+   if [ $MAX_TABLES -gt 0 ];then
+    echo "AND rownum <= ${MAX_TABLES}" >> $TMP
+   fi
+   echo ";" >> $TMP
+   echo "exit" >> $TMP
+
+   $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $TMP_SQL
+   echo "set lines 500 echo on" > $TMP
+   grep "ALTER TABLE" $TMP_SQL >> $TMP
+   echo "exit" >> $TMP
+}
+
+notify() {
+   echo > $MAIL_TMP
+   head -n 2 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "***********************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep Reorganizing $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "***********************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   tail -n 50 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "***********************************************************************************************************" >> $MAIL_TMP
+   echo "See logfile $LOG for more details." >> $MAIL_TMP
+
+   echo >> $LOG
+   if [ $NOTIF = 'Y' ]; then
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Table Reorganize notification]" -t $MAIL_TMP | tee --a $LOG
+   fi
+}
+
+############
+# MAIN
+############
+# Argument parsing
+while getopts :d:spfaq arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  f)
+    OPTYPE=FULL
+    ;;
+  s)
+    OPTYPE=SCHEMA
+    ;;
+  q)
+    NOTIF=N
+    ;;
+  a)
+    MAX=0
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Execute
+defrag
+exec_query
+
+# log file tail
+log_tail
+
+# Send notification mail
+notify
+exit

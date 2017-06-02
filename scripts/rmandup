@@ -1,0 +1,471 @@
+#!/bin/bash
+DIR_SCRIPTS=/home/oracle/scripts
+ORABASE=/opt/app/oracle/11.2.0.4/base
+OUSER=root
+PROG=DUP
+OPTYPE=UNTIL
+DUPLICATE=N
+UNTIL=NOW
+UPGRADE=N
+NOTIF=Y
+BACKUP_TIME="22:00"
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+usage() {
+   echo "Usage: rmandup -d <SID> [-t <tag to restore>] [-u <until time>] [-s <sequence number>] [-c <SCN>] [-p] [-g] [-q]";
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit 1
+   fi
+
+   if [ "$UNTIL" = "NOW" -o "$UNTIL" = "now" ];then
+      export NLS_DATE_FORMAT='dd/mm/yyyy hh24:mi'
+      UNTIL=`date --date="1 days ago $BACKUP_TIME" +"%d/%m/%Y %H:%M"`
+      #backup_arc
+   fi
+}
+
+notify() {
+   IGNORE='ORA-39700|RMAN-00571|RMAN-00569|RMAN-00571|RMAN-03002|ORA-01092|ORA-00704|ORA-39700|ORA-03114|ORA-00099|ORA-15110|ORA-15018|ORA-15013'
+   ERR_TMP=$DIR_SCRIPTS/tmp/err_${PROG}_${OPTYPE}_${SID}
+   egrep -i 'error|ORA-|RMAN-' $LOG | egrep -v "${IGNORE}" | egrep -v "ERROR at line" > $ERR_TMP
+
+   # Send alert if errors found in log, ignoring ORA-39700
+   if [ -s $ERR_TMP ]; then
+      LABEL="[$ENV DB - ALERT: RESTORE of database $SID FAILED!]" 
+      echo >> $ERR_TMP
+      echo "$(date '+%d/%m/%Y (%H:%M:%S)')" >> $ERR_TMP
+      echo >> $ERR_TMP
+      echo "************************************************************************************************************" >> $ERR_TMP
+      echo "See logfile $LOG for more details." >> $ERR_TMP
+
+      $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "$LABEL" -t $ERR_TMP -f text | tee -a $LOG
+      return
+   fi
+
+   if [ "$NOTIF" = "Y" ]; then
+      get_last_SCN
+      LABEL="[$ENV DB - RMAN Restore database $SID from PRD Backup Files Notification]"
+      echo "Last SCN: $LAST_SCN - Timestamp: $SCN_TIMESTAMP" > $MAIL_TMP
+      echo "Last Sequence Number restored: $SEQUENCE - Timestamp: $LOG_TIMESTAMP" >> $MAIL_TMP
+      echo "************************************************************************************************************" >> $MAIL_TMP
+      echo >> $MAIL_TMP
+      echo >> $MAIL_TMP
+      cat -v $LOG >> $MAIL_TMP
+      echo >> $MAIL_TMP
+      echo "************************************************************************************************************" >> $MAIL_TMP
+      echo "See log file $LOG for more details." >> $MAIL_TMP
+      $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "$LABEL" -t $MAIL_TMP -f text | tee -a $LOG
+   fi
+}
+
+mount_NFS() {
+   for i in `grep NFS_PRD /etc/fstab | awk '{ print $2}'`
+   do
+     umount $i
+   done
+   mount $BKP_NFS
+}
+
+break_ASM() {
+   LOWER_DC_PREFIX=`echo $DC | tr [A-Z] [a-z]`
+   LOWER_ENV_PREFIX=`echo $ENV | cut -d ' ' -f 2 | tr [A-Z] [a-z]`
+   ASM_PREFIX=`echo $SID | cut -c1-5`
+   LOWER_SID=`echo $SID | tr [A-Z] [a-z]`
+   LOWER_ASM_PREFIX=`echo $ASM_PREFIX | tr [A-Z] [a-z]`
+   UPPER_ASM_PREFIX=`echo $ASM_PREFIX | tr [a-z] [A-Z]`
+
+   # Stop database
+   export ORACLE_SID=$SID
+   export ORACLE_HOME=$ORABASE/dbhome
+   for i in `grep "$ORACLE_HOME" /etc/oratab | cut -d ':' -f 1`
+   do
+     su -l oracle -c "srvctl stop database -d $i -f" | tee -a $LOG
+   done
+   echo "Done." | tee -a $LOG
+
+   # Clean trace file directories
+   rm -rf /opt/app/oracle/11.2.0.4/base/admin/$SID
+   mkdir -p /opt/app/oracle/11.2.0.4/base/admin/$SID
+   mkdir -p /opt/app/oracle/11.2.0.4/base/admin/$SID/adump
+   chown -R oracle:oinstall /opt/app/oracle/11.2.0.4/base/admin/$SID
+
+   # Remove old controlfile
+   rm -f /tmp/mycontrolfile_${SID}
+ 
+   # Remove archivelogs from previous restore
+   rm -rf /opt/app/oracle/archivelog/*
+   mkdir $ARC_DIR
+   chown oracle:oinstall $ARC_DIR
+
+   # Stop ASM and remove ASM disks
+   export ORACLE_SID=+ASM
+   export ORACLE_HOME=$ORABASE/grid  
+   su -l oracle -c "srvctl stop asm -f" | tee -a $LOG
+   /etc/init.d/oracleasm listdisks | grep -i dup_ > $TMP | tee -a $LOG
+
+   for i in `cat $TMP`; do /etc/init.d/oracleasm deletedisk $i | tee -a $LOG; done
+   service oracleasm restart | tee -a $LOG
+   /etc/init.d/oracleasm scandisks | tee -a $LOG
+   /etc/init.d/oracleasm listdisks | tee -a $LOG
+
+   # Create ASM disks and start ASM
+   /etc/init.d/oracleasm createdisk ${DC}_DUP_DATA_1 /dev/mapper/pa4-$LOWER_ENV_PREFIX-db-dup-data_${LOWER_SID}_1 | tee -a $LOG
+   /etc/init.d/oracleasm createdisk ${DC}_DUP_REDO_1 /dev/mapper/pa4-$LOWER_ENV_PREFIX-db-dup-redo_${LOWER_SID}_1 | tee -a $LOG
+   /etc/init.d/oracleasm createdisk ${DC}_DUP_TEMP_1 /dev/mapper/pa4-$LOWER_ENV_PREFIX-db-dup-temp_${LOWER_SID}_1 | tee -a $LOG
+   /etc/init.d/oracleasm scandisks | tee -a $LOG
+   /etc/init.d/oracleasm listdisks | tee -a $LOG
+
+   echo "startup;" > $TMP
+   #echo "alter diskgroup DATA mount;" >> $TMP
+   #echo "alter diskgroup REDO mount;" >> $TMP
+   #echo "alter diskgroup TEMP mount;" >> $TMP
+   echo "create diskgroup DATA external redundancy disk 'ORCL:${DC}_DUP_DATA_1';" >> $TMP
+   echo "create diskgroup REDO external redundancy disk 'ORCL:${DC}_DUP_REDO_1';" >> $TMP
+   echo "create diskgroup TEMP external redundancy disk 'ORCL:${DC}_DUP_TEMP_1';" >> $TMP
+   echo "exit" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysasm @$TMP" | tee -a $LOG
+}
+
+file_convert() {
+   echo "set lines 200 pages 0 trims on trimout on" > $TMP
+   echo "select 'SET NEWNAME FOR DATAFILE ' || TO_CHAR(FILE_ID) || ' TO ''' || FILE_NAME || ''';' FROM DBA_DATA_FILES;" >> $TMP
+   echo "select 'SET NEWNAME FOR TEMPFILE ' || TO_CHAR(FILE_ID) || ' TO ''' || FILE_NAME || ''';' FROM DBA_TEMP_FILES;" >> $TMP
+   echo "select 'SQL \"alter database rename file ''''' || MEMBER || ''''' to ''''' || REPLACE(MEMBER,'+REDO','+${ASM_PREFIX}_REDO') || '''''\";' FROM V\$LOGFILE WHERE MEMBER like '%+REDO%';" >> $TMP 
+   echo "select 'SQL \"alter database rename file ''''' || MEMBER || ''''' to ''''' || REPLACE(MEMBER,'+TEMP','+${ASM_PREFIX}_TEMP') || '''''\";' FROM V\$LOGFILE WHERE MEMBER like '%+TEMP%';" >> $TMP
+   echo "exit" >> $TMP
+   export ORACLE_SID=$SID
+   export ORACLE_HOME=$ORABASE/dbhome
+   su oracle -c "$ORACLE_HOME/bin/sqlplus SYS/$SYS_PWD@${SID}_prd as sysdba @$TMP" | tee -a $LOG
+   grep "SET NEWNAME" $LOG > $TMP
+   sed -i "s#+DATA#+${ASM_PREFIX}_DATA#g" $TMP
+   grep "alter database rename file" $LOG >> $TMP
+}
+
+create_pfile() {
+   PFILE=$ORACLE_HOME/dbs/init$SID.ora
+   echo "DB_NAME=$SID" > $PFILE
+   echo "sga_target=1024M" >> $PFILE
+   echo "pga_aggregate_target=1024M" >> $PFILE
+   echo "shared_pool_size=0" >> $PFILE
+   echo "db_cache_size=0" >> $PFILE
+   echo "compatible='11.2.0.4'" >> $PFILE
+   #echo "control_files='$ARC_DIR/${SID}_ctrl.dbf'" >> $PFILE
+   echo "diagnostic_dest='$ORABASE'" >> $PFILE
+   echo "audit_file_dest='$ORABASE/admin/$SID/adump'" >> $PFILE
+   echo "log_archive_dest_1='LOCATION=$ARC_DIR'" >> $PFILE
+}
+
+restore_controlfile() {
+   CTL_TAG=`echo $TAG | sed -e 's#DB#CTL#g'`
+
+   # create new pfile
+   create_pfile
+
+   # Restore latest controlfile
+   rm -f $ORACLE_HOME/dbs/init$ORACLE_SID.bkp
+   rm -f /opt/app/oracle/$SID/${SID}_ctrl.dbf
+
+   echo "RUN {" > $RMAN_CMD
+   echo "STARTUP FORCE NOMOUNT PFILE='$ORACLE_HOME/dbs/init$SID.ora';" >> $RMAN_CMD
+   echo "set DBID $DBID;" >> $RMAN_CMD
+   echo "allocate channel c1 device type DISK;" >> $RMAN_CMD
+   echo "SET CONTROLFILE AUTOBACKUP FORMAT FOR DEVICE TYPE DISK TO '$RMAN_DISK/$SID/autobackup/%F';" >> $RMAN_CMD
+   # Restore the last controlfile from autobackup (RMAN catalog not available because database not mounted)
+   #echo "RESTORE CONTROLFILE TO '$ARC_DIR/${SID}_ctrl.dbf' FROM AUTOBACKUP;" >> $RMAN_CMD
+   echo "RESTORE CONTROLFILE TO '+REDO/${SID}_ctrl.dbf' FROM AUTOBACKUP;" >> $RMAN_CMD
+   echo "RESTORE CONTROLFILE TO '+TEMP/${SID}_ctrl.dbf' FROM AUTOBACKUP;" >> $RMAN_CMD
+   echo "release channel c1;" >> $RMAN_CMD
+   echo "}" >> $RMAN_CMD
+   echo >> $RMAN_CMD
+
+   su oracle -c "$ORACLE_HOME/bin/rman target / @$RMAN_CMD" | tee -a $LOG
+
+   # Update pfile
+   echo "control_files='+REDO/${SID}_ctrl.dbf','+TEMP/${SID}_ctrl.dbf'" >> $PFILE
+
+   # Restore accurate controlfile (RMAN catalog available, database mounted
+   #echo "RUN {" > $RMAN_CMD
+   #echo "STARTUP FORCE MOUNT PFILE='$ORACLE_HOME/dbs/init$SID.ora';" >> $RMAN_CMD
+   #echo "allocate channel c1 device type DISK;" >> $RMAN_CMD
+   #case "$OPTYPE" in
+   #  UNTIL)
+   #    echo "SET $UNTIL_TIME;" >> $RMAN_CMD
+   #    ;;
+   #  SEQ)
+   #    echo "SET $UNTIL_SEQ;" >> $RMAN_CMD
+   #    ;;
+   #  SCN)
+   #    echo "SET $UNTIL_SCN;" >> $RMAN_CMD
+   #    ;;
+   #  *)
+   #    ;;
+   #esac
+
+   # accurate controlfile must be restored in a file because database is mounted (current controlfile in use cannot be overwritten)
+   #echo "RESTORE CONTROLFILE TO '/tmp/mycontrolfile_${SID}' $FROM_TAG;" >> $RMAN_CMD
+   #echo "release channel c1;" >> $RMAN_CMD
+   #echo "}" >> $RMAN_CMD
+   #echo >> $RMAN_CMD
+
+   #su oracle -c "$ORACLE_HOME/bin/rman target / @$RMAN_CMD" | tee -a $LOG
+
+   # Replace autobackup controlfile with accurate controlfile (must be done while database not mounted)
+   #echo "RUN {" > $RMAN_CMD
+   #echo "STARTUP FORCE NOMOUNT PFILE='$ORACLE_HOME/dbs/init$SID.ora';" >> $RMAN_CMD
+   #echo "set DBID $DBID;" >> $RMAN_CMD
+   #echo "allocate channel c1 device type DISK;" >> $RMAN_CMD
+   #echo "RESTORE CONTROLFILE TO '$ARC_DIR/${SID}_ctrl.dbf' FROM '/tmp/mycontrolfile_${SID}';" >> $RMAN_CMD
+   #echo "release channel c1;" >> $RMAN_CMD
+   #echo "}" >> $RMAN_CMD
+   #echo >> $RMAN_CMD
+
+   #su oracle -c "$ORACLE_HOME/bin/rman target / @$RMAN_CMD" | tee -a $LOG
+}
+
+restore_db() {
+   #file_convert
+   echo "RUN {" > $RMAN_CMD
+   echo "ALLOCATE CHANNEL c2 DEVICE TYPE DISK;" >> $RMAN_CMD
+   echo "STARTUP FORCE MOUNT PFILE='$ORACLE_HOME/dbs/init$SID.ora';" >> $RMAN_CMD
+   case "$OPTYPE" in
+     UNTIL)
+       echo "SET $UNTIL_TIME;" >> $RMAN_CMD
+       ;;
+     SEQ)
+       echo "SET $UNTIL_SEQ;" >> $RMAN_CMD
+       ;;
+     SCN)
+       echo "SET $UNTIL_SCN;" >> $RMAN_CMD
+       ;;
+     *)
+       ;;
+   esac
+   echo "RESTORE SPFILE TO '$ORACLE_HOME/dbs/init$ORACLE_SID.bkp';" >> $RMAN_CMD
+   echo "RESTORE DATABASE $FROM_TAG;" >> $RMAN_CMD
+   echo "SWITCH DATAFILE ALL;" >> $RMAN_CMD
+   echo "RECOVER DATABASE;" >> $RMAN_CMD
+   echo "release channel c2;" >> $RMAN_CMD
+   echo "}" >> $RMAN_CMD
+   echo "ALTER DATABASE OPEN RESETLOGS;" >> $RMAN_CMD
+   echo "exit;" >> $RMAN_CMD
+   echo >> $RMAN_CMD
+
+   su oracle -c "$ORACLE_HOME/bin/rman target / @$RMAN_CMD" | tee -a $LOG
+}
+
+backup_arc() {
+   echo "BACKUP ARCHIVELOG ALL;" > $RMAN_CMD
+   su oracle -c "$ORACLE_HOME/bin/rman target SYS/$SYS_PWD@${SID}_prd @$TMP" | tee -a $LOG 
+}
+
+duplicate_db() {
+   rm -f $ORACLE_HOME/dbs/init$SID.ora $ORACLE_HOME/dbs/spfile$SID.ora
+   create_pfile
+
+   echo "startup force nomount pfile='$ORACLE_HOME/dbs/init$SID.dup';" > $TMP
+   echo exit >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" | tee -a $LOG   
+   echo "RUN {" > $RMAN_CMD
+   echo "ALLOCATE CHANNEL tar1 DEVICE TYPE DISK;" >> $RMAN_CMD
+   echo "ALLOCATE AUXILIARY CHANNEL aux1 DEVICE TYPE DISK;" >> $RMAN_CMD
+   echo "DUPLICATE TARGET DATABASE TO $SID" >> $RMAN_CMD
+   echo "PFILE='$ORACLE_HOME/dbs/init$SID.dup'" >> $RMAN_CMD
+   echo "NOFILENAMECHECK" >> $RMAN_CMD
+   echo "$UNTIL_TIME" >> $RMAN_CMD
+   echo "release channel aux1;" >> $RMAN_CMD
+   echo "release channel tar1;" >> $RMAN_CMD
+   echo "}" >> $RMAN_CMD
+   echo "exit;" >> $RMAN_CMD
+
+   su oracle -c "$ORACLE_HOME/bin/rman target SYS/$SYS_PWD@${SID}_prd auxiliary / @$RMAN_CMD" | tee -a $LOG
+}
+
+get_last_SCN() {
+   SEQUENCE=`grep "archived log file" $LOG | grep "sequence=" | awk '{print $6}' | tail -1 | cut -d '=' -f 2`
+   TMP_2=$DIR_SCRIPTS/tmp/tmp2_${PROG}_${OPTYPE}_${SID}
+   echo "set pages 0 echo off" > $TMP
+   echo "alter session set nls_timestamp_format='dd-mm-yyyy hh24:mi:ss';" >> $TMP
+   echo "select distinct 'LOG_TIMESTAMP=' || TO_CHAR(FIRST_TIME,'dd/mm/yyyy hh24:mi:ss') from v\$archived_log where SEQUENCE#=$SEQUENCE;" >> $TMP
+   echo "select 'SCN=' || TO_CHAR(CURRENT_SCN) || ',' || TO_CHAR(SCN_TO_TIMESTAMP(CURRENT_SCN)) from v\$database;" >> $TMP
+   echo "exit" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" > $TMP_2
+   LAST_SCN=`grep SCN $TMP_2 | cut -d '=' -f 2 | cut -d ',' -f 1`
+   SCN_TIMESTAMP=`grep SCN $TMP_2 | cut -d ',' -f 2`
+   LOG_TIMESTAMP=`grep LOG_TIMESTAMP $TMP_2 | tail -1 | cut -d '=' -f 2`
+   rm -f $TMP_2
+}
+
+create_redo() {
+   echo "startup force mount;" > $TMP
+   echo "alter database add logfile group 1 ('+${ASM_PREFIX}_REDO','+${ASM_PREFIX}_TEMP') size 500M;" >> $TMP
+   echo "alter database add logfile group 2 ('+${ASM_PREFIX}_REDO','+${ASM_PREFIX}_TEMP') size 500M;" >> $TMP
+   echo "alter database add logfile group 3 ('+${ASM_PREFIX}_REDO','+${ASM_PREFIX}_TEMP') size 500M;" >> $TMP
+   echo "exit" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" | tee -a $LOG
+}
+
+start_noarc() {
+   #cp PFILE=$ORACLE_HOME/dbs/init$SID.text PFILE=$ORACLE_HOME/dbs/init$SID.ora
+   echo "startup force mount pfile='$ORACLE_HOME/dbs/init$SID.ora';" > $TMP
+   echo "create spfile from pfile;" >> $TMP
+   echo "startup force mount;" >> $TMP
+   echo "alter database noarchivelog;" >> $TMP
+   echo "alter database open;" >> $TMP
+   echo "select instance_name, status from v\$instance;" >> $TMP
+   echo "exit" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" | tee -a $LOG
+}
+
+db_upgrade() {
+   echo | tee -a $LOG
+   echo "************************************************************************************************" | tee -a $LOG
+   echo "Starting database upgrade..." | tee -a $LOG
+   cd $DIR_SCRIPTS
+   rm -f ${SID}_preupgrade.log ${SID}_upgrade.log ${SID}_postupgrade.log
+   echo "set echo on" > $TMP
+   echo "shutdown immediate;" >> $TMP
+   echo "startup upgrade;" >> $TMP
+   echo "spool ${SID}_preupgrade.log" >> $TMP
+   echo "@?/rdbms/admin/utlu112i.sql" >> $TMP
+   echo "spool off" >> $TMP
+   echo "spool ${SID}_upgrade.log" >> $TMP
+   echo "@?/rdbms/admin/catupgrd.sql" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" 
+
+   echo "set echo on" > $TMP
+   echo "startup" >> $TMP
+   echo "spool ${SID}_postupgrade.log" >> $TMP
+   echo "@?/rdbms/admin/utlrp.sql" >> $TMP
+   echo "@?/rdbms/admin/utlu112s.sql" >> $TMP
+   echo "spool off" >> $TMP
+   echo "exit" >> $TMP
+   su oracle -c "$ORACLE_HOME/bin/sqlplus / as sysdba @$TMP" 
+   echo "Done." | tee -a $LOG
+}
+
+###############
+# MAIN
+###############
+
+# Argument parsing
+while getopts :d:t:s:c:u:qpg arg
+   do
+   case $arg in
+     d)
+       SID=$OPTARG
+       ;;
+     t)
+       OPTYPE=TAG
+       TAG=$OPTARG
+       ;;
+     s)
+       OPTYPE=SEQ
+       SEQUENCE=$OPTARG
+       ;;
+     c)
+       OPTYPE=SCN
+       SCN=$OPTARG
+       ;;
+     u)
+       OPTYPE=UNTIL
+       UNTIL=$OPTARG
+       ;;
+     q)
+       NOTIF=N
+       ;;
+     g)
+       UPGRADE=Y
+       ;;
+     p)
+       DUPLICATE=Y
+       ;;
+     \?)
+       echo $arg
+       usage
+       exit 1
+       ;;
+     :)
+       echo "Option $OPTARG requires an argument."
+       exit
+       ;;
+   esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Set Oracle environment
+set_oraenv
+log_head
+
+# Get restore options
+case $OPTYPE in
+  TAG)
+    FROM_TAG="FROM TAG '$TAG'"
+    ;;
+  UNTIL)
+    UNTIL_TIME="UNTIL TIME \"TO_DATE('$UNTIL','DD/MM/YYYY hh24:mi:ss')\""
+    ;;
+  SEQ)
+    UNTIL_SEQ="UNTIL SEQUENCE $SEQUENCE"
+    ;;
+  SCN)
+    UNTIL_SCN="UNTIL SCN $SCN"
+    ;;
+  *)
+    echo "Invalid option."
+    usage
+    exit
+    ;;
+esac
+
+# Variables
+SYS_PWD=`cat $DIR_SCRIPTS/${SID}_dup.pwd`
+ASM_PREFIX=`echo $SID | cut -c1-5 | tr [a-z] [A-Z]`
+ARC_DIR=/opt/app/oracle/archivelog/$SID
+export ORACLE_BASE=$ORABASE
+
+# drop & recreate ASM disks
+break_ASM
+
+# Mount backup NFS
+mount_NFS
+
+# DB copy
+export ORACLE_SID=$SID
+export ORACLE_HOME=$ORABASE/dbhome
+
+if [ "$DUPLICATE" = "Y" ]; then
+   # RMAN duplicate
+   duplicate_db
+else
+   # RMAN restore to copy
+   restore_controlfile
+   restore_db
+fi
+
+# DB upgrade if needed
+if [ "$UPGRADE" = "Y" ]; then
+   db_upgrade
+fi
+
+# Restart DB in NOARCHIVELOG mode
+start_noarc
+log_tail
+
+# Send notification mail
+notify
+exit

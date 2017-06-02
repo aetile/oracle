@@ -1,0 +1,150 @@
+#!/bin/bash
+
+###############################################################################################
+#
+# Reinstall of Database Console
+#
+# Input: -d Oracle SID
+#        -z Time Zone
+#
+# Created: 12/12/2014 AET
+# Modified:
+#
+###############################################################################################
+
+DIR_SCRIPTS=/home/oracle/scripts
+LOG=$DIR_SCRIPTS/eminst.log
+OUSER=oracle
+PROG=EM
+
+source $DIR_SCRIPTS/dbmainlib.sh
+ 
+usage() { echo "Usage: eminst -d <Oracle SID> [ -z <Time Zone> ]"; exit; }
+
+check_parms() {
+   if [ ! -n $SID ]; then
+    usage
+    exit
+   fi
+
+   if [ -z $SID ]; then
+    usage
+    exit
+   fi
+}
+
+stop_dbconsole() {
+   echo "Stopping DB console..."
+   sleep 1
+   . $ORACLE_HOME/bin/emctl stop dbconsole | tee $LOG
+   echo
+}
+
+kill_emca() {
+   echo "Looking for EMCA processes..."
+   sleep 1
+   for i in `ps -aef | grep emca | awk '{print $2}'|uniq`; do { echo "Killing process $i..." | tee $LOG; kill -9 $i; }; done | tee $LOG
+   echo
+}
+
+kill_sysman() {
+   echo "Looking for SYSMAN sessions..."
+   sleep 1
+   echo "REVOKE CREATE SESSION, CONNECT FROM SYSMAN;" > kill_sysman.sql
+   echo "set echo off termout off serveroutput off feedback off" >> kill_sysman.sql
+   echo "spool kill_sysman.tmp" >> kill_sysman.sql
+   echo "select 'ALTER SYSTEM KILL SESSION ''' || TO_CHAR(sid) || ',' || TO_CHAR(serial#) || ''';' from v\$session where username = 'SYSMAN';" >> kill_sysman.sql
+   echo "spool off" >> kill_sysman.sql
+   echo exit >> kill_sysman.sql
+   $ORACLE_HOME/bin/sqlplus / as sysdba @kill_sysman.sql
+
+   grep "ALTER SYSTEM KILL SESSION" kill_sysman.tmp > kill_sysman.sql
+   echo exit >> kill_sysman.sql
+   $ORACLE_HOME/bin/sqlplus / as sysdba @kill_sysman.sql | tee $LOG
+   rm -f kill_sysman.tmp
+   rm -f kill_sysman.sql
+   echo
+}
+
+drop_sysman() {
+   echo "Dropping SYSMAN schema..."
+   sleep 1
+   echo "drop user sysman cascade;" >> $TMP
+   echo "drop public synonym SETEMVIEWUSERCONTEXT;" >> $TMP
+   echo "drop role MGMT_USER;" >> $TMP
+   echo "drop PUBLIC SYNONYM MGMT_TARGET_BLACKOUTS;" >> $TMP
+   echo "drop user MGMT_VIEW;" >> $TMP
+   echo exit >> $TMP
+   $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP >> $LOG
+   echo "Done."
+   echo
+}
+
+uninstall() {
+   echo "Reinstalling DB console..."
+   cd $ORACLE_HOME
+   export TZ=$TIMEZ
+   $ORACLE_HOME/bin/emca -deconfig dbcontrol db -repos drop
+}
+
+install() {
+   echo "Reinstalling DB console..."
+   cd $ORACLE_HOME
+   export TZ=$TIMEZ
+   $ORACLE_HOME/bin/emca -config dbcontrol db -repos recreate -SID $SID -ORACLE_HOME $ORACLE_HOME | tee $LOG
+   $ORACLE_HOME/bin/emctl unsecure dbconsole
+}
+
+########
+# MAIN
+########
+
+# Argument parsing
+while getopts :d:z: arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  z)
+    TIMEZ=$OPTARG
+    ;;
+  \?)
+    usage
+    ;;
+  :)
+    echo "Option $arg requires an argument"
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Stop DB console
+stop_dbconsole
+
+# Kill remaining emca processes
+kill_emca
+
+# Kill SYSMAN db sessions
+kill_sysman
+
+# Drop SYSMAN schema
+drop_sysman
+
+# Reinstall DB console
+uninstall
+install
+
+# Log file tail
+log_tail
+
+exit

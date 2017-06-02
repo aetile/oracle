@@ -1,0 +1,37 @@
+CHAIN=10
+DIR_SCRIPTS=/home/oracle/scripts
+CHAIN_MAIL=$DIR_SCRIPTS/tmp/${CHAIN}_mail_inc2_${1}_$(date '+%Y.%m.%d_%H.%M')
+
+#env
+. $DIR_SCRIPTS/$1.conf
+EMAIL="$EMAIL,$TECHOPSEMAIL"
+
+# Mail body initialization
+echo > $CHAIN_MAIL
+
+# Differential Backup
+MAIL_TMP=$DIR_SCRIPTS/tmp/mail_BKP_inc2_$1_$(date '+%Y.%m.%d_%H.%M').html
+$DIR_SCRIPTS/rmanbkp -d $1 -t inc2 -q
+cat $MAIL_TMP >> $CHAIN_MAIL
+echo >> $CHAIN_MAIL
+
+# Index Rebuild
+#MAIL_TMP=$DIR_SCRIPTS/tmp/mail_XBUILD_PARTIAL_$1_$(date '+%Y.%m.%d_%H.%M').html
+#$DIR_SCRIPTS/xrebuild -d $1 -p -q
+#cat $MAIL_TMP >> $CHAIN_MAIL
+#echo >> $CHAIN_MAIL
+
+# Stats Gathering
+MAIL_TMP=$DIR_SCRIPTS/tmp/mail_STATS_FULL_$1_$(date '+%Y.%m.%d_%H.%M').html
+$DIR_SCRIPTS/dbstats -d $1 -f -q
+cat $MAIL_TMP >> $CHAIN_MAIL
+echo >> $CHAIN_MAIL
+
+# Log purge
+find $DIR_SCRIPTS/log -type f -mtime +7 | xargs rm -f
+find $DIR_SCRIPTS/tmp -type f -mtime +3 | xargs rm -f
+
+# Notification email
+if echo $ENV | grep PRD >> /dev/null; then
+ $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Differential Backup notification]" -t $CHAIN_MAIL
+fi

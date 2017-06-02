@@ -1,0 +1,145 @@
+#!/bin/bash
+
+################################################################################################################################
+#
+# Perform Staspack snapshot or maintenance.
+#
+#
+# Input: -d: SID
+#        -s: snapshot [level]
+#        -p: purge n days of records
+#
+#
+#
+# Created: 26/02/2015 AET
+# Modified:
+#
+################################################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=PERF
+OPTYPE=
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+usage() {
+echo "Usage: dbperf -d <SID> [-sp] [-l <snap level>]";
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ $OPTYPE = SETLEVEL ] && [ ! $LEVEL -ge 0 ]; then
+    echo "Snap level must be zero or greater. Aborting."
+    exit
+   fi
+}
+
+set_level() {
+   echo "Setting snapshot collection level to $LEVEL..." | tee -a $LOG
+   currentlevel=`grep SNAP_LEVEL $DIR_SCRIPTS/$SID.conf | cut -d '=' -f 2`
+   sed -i "s#SNAP_LEVEL\=$currentlevel#SNAP_LEVEL\=$LEVEL#g" $DIR_SCRIPTS/$SID.conf
+   echo "execute statspack.modify_statspack_parameter(i_snap_level=>$LEVEL);" > $TMP
+   echo exit >> $TMP
+}
+
+snap() {
+   echo "Executing snapshot with collection level $SNAP_LEVEL..." | tee -a $LOG
+   echo "execute statspack.snap(i_snap_level=>$SNAP_LEVEL);" > $TMP
+   echo exit >> $TMP
+}
+
+snaplevel() {
+  echo "Setting snapshot collection level to $LEVEL and taking snapshot..." | tee -a $LOG
+  echo "execute statspack.snap(i_snap_level=>$SNAP_LEVEL,i_modify_parameter=>'true');" > $TMP
+   echo exit >> $TMP
+}
+
+purge() {
+   echo "Purging snapshots older than $PERF_DAYS days..." | tee -a $LOG
+   echo "execute sppurpkg.purge($PERF_DAYS);" > $TMP
+   echo exit >> $TMP
+}
+
+###########
+# MAIN
+###########
+
+# Argument parsing
+while getopts :d:spl: arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  s)
+    OPTYPE=${OPTYPE}SNAP
+    ;;
+  p)
+    OPTYPE=PURGE
+    ;;
+  l)
+    OPTYPE=${OPTYPE}SETLEVEL
+    LEVEL=$OPTARG
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Execute snapshot
+case $OPTYPE in
+  SETLEVEL)
+   set_level
+   ;;
+  SNAP)
+   snap
+   ;;
+  SNAPSETLEVEL|SETLEVELSNAP)
+   snaplevel
+   ;;
+  PURGE)
+   purge
+   ;;
+esac
+
+# Execute
+exec_query $TMP $MAIL_TMP $LOG
+
+# log file tail
+log_tail
+
+# Purge
+case $OPTYPE in
+  SNAP)
+   rm -f $TMP $MAIL_TMP $LOG
+   ;;
+  *)
+   ;;
+esac
+
+exit
+

@@ -1,0 +1,157 @@
+#!/bin/bash
+
+#################################################################################################
+#
+# Send notification email.
+#
+#
+# Input: -d destination email
+#        -s sender email
+#        -b mail subject
+#        -m SMTP server socket
+#        -t path to mail body file
+#        -l log file path to attach
+#        -f mail body format (text or html)
+#
+#
+#
+# Created: 19/01/2015 AET
+# Modified:
+#
+##################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=MAIL
+OPTYPE=NOTIF
+MAIL_TMP=$DIR_SCRIPTS/tmp/mail
+FORMAT=text
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+usage() {
+echo "Usage: smail -d <destination email> -s <sender email> -m <SMTP socket> -b <mail subject> -t <mail body file> [-f <text or html>] [-l <attachement>]";
+}
+
+check_parms() {
+   if [ ! -n "$EMAIL" ]; then
+    usage
+    exit
+   fi
+
+   if [ ! -n "$SENDER" ]; then
+    usage
+    exit
+   fi
+
+   if [ ! -n "$TEXT" ]; then
+    usage
+    exit
+   fi
+
+   if [ ! -n "$SUBJECT" ]; then
+    usage
+    exit
+   fi
+
+   if [ ! -n "$SMTP" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$EMAIL" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SENDER" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$TEXT" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SUBJECT" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SMTP" ]; then
+    usage
+    exit
+   fi
+
+   case $FORMAT in
+     text|TEXT)
+      FORMAT=text
+      ;;
+     html|HTML)
+      FORMAT=html
+      ;;
+     *)
+      echo "Invalid mail body format. Aborting."
+      exit
+   esac
+}
+
+notify() {
+   if [ ! -n $LOG ] && [ -z $LOG ]; then
+    cat $TEXT | $DIR_SCRIPTS/sendEmail -f $SENDER -t "$EMAIL" -s $SMTP -u "$SUBJECT" -a $LOG  -o message-content-type=$FORMAT > /dev/null
+   else
+    cat $TEXT | $DIR_SCRIPTS/sendEmail -f $SENDER -t "$EMAIL" -s $SMTP -u "$SUBJECT"  -o message-content-type=$FORMAT > /dev/null
+   fi
+   echo "Mail sent to SMTP server $SMTP"
+   exit
+}
+
+########
+# MAIN
+########
+
+# Argument parsing
+while getopts :d:s:m:b:t:lf: arg
+do
+case $arg in
+  d)
+    EMAIL="$OPTARG"
+    ;;
+  s)
+    SENDER=$OPTARG
+    ;;
+  b)
+    SUBJECT=$OPTARG
+    ;;
+  m)
+    SMTP=$OPTARG
+    ;;
+  t)
+    TEXT=$OPTARG
+    ;;
+  l)
+    ATTACH=$OPTARG
+    ;;
+  f)
+    FORMAT=$OPTARG
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check input parameters
+check_parms
+
+# Check SMTP status
+check_smtp $SMTP
+
+# Send notification mail
+notify
+exit

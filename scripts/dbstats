@@ -1,0 +1,180 @@
+#!/bin/bash
+
+#################################################################################################
+#
+# Gather database statistics.
+#
+#
+# Input: -d Oracle SID
+#        -f Full DB stats
+#        -t Tables with stale stats
+#        -s Schema stats
+#        -a recompute all objects
+#        -c custom tables with stale stats
+#        -q quiet (no email notification)
+#
+#
+# Created: 29/01/2015 AET
+# Modified:
+#
+##################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=STATS
+OPTYPE=FULL
+OPTIONS="GATHER AUTO"
+NOTIF=Y
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+usage() {
+echo "Usage: dbstats -d <Oracle SID> [-fsc] [-at] [-q]";
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit
+   fi
+
+   # Check if index rebuild in progress
+   xrebuild=`ps -aef | grep xrebuild | wc -l`
+   if [ $xrebuild -gt 1 ]; then
+     echo "Index rebuild in progress. Aborting." | tee -a $LOG
+     exit 1
+   fi
+}
+
+full() {
+   echo "Gathering $OPTYPE $OPTIONS database statistics..." | tee -a $LOG
+   echo "set lines 500 echo on" > $TMP
+   echo "EXEC DBMS_STATS.gather_database_stats(estimate_percent => $STATS_SAMPLE, options => '${OPTIONS}', method_opt => '${STATS_METHOD}', degree => DBMS_STATS.AUTO_DEGREE, granularity => '${STATS_GRANUL}', cascade => TRUE);" >> $TMP
+   echo "exit" >> $TMP
+}
+
+custom() {
+ echo "Gathering custom mode table statistics..." | tee -a $LOG
+   echo "set lines 500 pages 0 echo off" > $SQLTMP
+   echo "SELECT 'EXEC DBMS_STATS.gather_table_stats(''' || OWNER|| ''',''' || TABLE_NAME||''',' || 'estimate_percent => $STATS_SAMPLE, method_opt => ' || ''' || $STATS_METHOD || ''' || ', cascade => TRUE, degree => DBMS_STATS.AUTO_DEGREE);'" >> $SQLTMP
+   echo "FROM DBA_TAB_STATISTICS" >> $SQLTMP
+   echo "WHERE STALE_STATS = 'YES'" >> $SQLTMP
+   echo "AND OWNER = '${APP_SCHEMA}'" >> $SQLTMP
+   echo "AND rownum <= ${MAX_TABLES}" >> $SQLTMP
+   echo "ORDER BY LAST_ANALYZED ASC;" >> $SQLTMP
+   echo "exit" >> $SQLTMP
+   $ORACLE_HOME/bin/sqlplus / as sysdba @$SQLTMP > $SQLLOG
+   echo "set lines 500 echo on" > $TMP
+   grep EXEC $SQLLOG >> $TMP
+   echo "exit" >> $TMP
+}
+
+schema() {
+   echo "Gathering schema statistics for $SCHEMA..." | tee -a $LOG
+   echo "set lines 500 echo on" > $TMP
+   echo "EXEC DBMS_STATS.GATHER_SCHEMA_STATS (ownname => '${APP_SCHEMA}', estimate_percent => $STATS_SAMPLE, options => '${OPTIONS}', method_opt => '${STATS_METHOD}', degree => DBMS_STATS.AUTO_DEGREE, granularity => '${STATS_GRANUL}', cascade => TRUE);" >> $TMP
+   echo "exit" >> $TMP
+}
+
+notify() {
+   echo > $MAIL_TMP
+   head -n 2 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep Gathering $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   tail -n 50 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo "See logfile $LOG for more details." >> $MAIL_TMP
+
+   echo >> $LOG
+   if [ $NOTIF = 'Y' ]; then
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Statistics Gathering notification]" -t $MAIL_TMP | tee -a $LOG
+   fi
+}
+
+#########
+# MAIN
+#########
+SQLTMP=$DIR_SCRIPTS/tmp/TMP_${PROG}_${OPTYPE}_${SID}.sql
+SQLLOG=$DIR_SCRIPTS/tmp/TMP_${PROG}_${OPTYPE}_${SID}.log
+
+# Argument parsing
+while getopts :d:fatsq arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  f)
+    OPTYPE=FULL
+    ;;
+  t)
+    OPTIONS="GATHER STALE"
+    ;;
+  s)
+    OPTYPE=SCHEMA
+    ;;
+  a)
+    OPTIONS="GATHER"
+    ;;
+  c)
+    OPTYPE=CUSTOM
+    ;;
+  q)
+    NOTIF=N
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Execute
+
+case $OPTYPE in
+  FULL|full)
+   full
+   ;;
+  CUSTOM|custom)
+   custom
+   ;;
+  SCHEMA|schema)
+   schema
+   ;;
+esac
+
+# Run stats gathering
+exec_query $TMP $MAIL_TMP $LOG
+
+# log file tail
+log_tail
+
+# Send notification mail
+notify
+
+#END
+exit
+

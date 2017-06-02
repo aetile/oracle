@@ -1,0 +1,2 @@
+*/15 6-22 * * 1-5 root su -l oracle -c "/home/oracle/scripts/dbperf -d SID_ -s"
+00 22 * * * root su -l oracle -c "/home/oracle/scripts/dbperf -d SID_ -p"

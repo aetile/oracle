@@ -1,0 +1,1 @@
+*/5 * * * * root rm -f /etc/check_mk/oracle_SID_.cache

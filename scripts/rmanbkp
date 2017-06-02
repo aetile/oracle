@@ -1,0 +1,369 @@
+#!/bin/bash
+
+#################################################################################################
+#
+# Hot Database Backups using RMAN. Should be sheduled with crontab.
+#
+#
+# Input: -d Oracle SID
+#        -t backup type
+#        -q quiet (no email notification)
+#        
+#
+#
+# Created: 19/01/2015 AET
+# Modified: 
+#
+##################################################################################################
+OUSER=oracle
+DIR_SCRIPTS=/home/oracle/scripts
+PROG=BKP
+NOTIF=Y
+
+source $DIR_SCRIPTS/dbmainlib.sh
+
+#############
+# functions #
+#############
+usage() { 
+echo "Usage: rmanbkp -d <Oracle SID> -t <Backup Type> [-q]";
+exit
+}
+
+check_parms() {
+   if [ ! -n "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ ! -n "$OPTYPE" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$SID" ]; then
+    usage
+    exit
+   fi
+
+   if [ -z "$OPTYPE" ]; then
+    usage
+    exit
+   fi
+}
+
+rman_head() {
+   echo "Initiating backup..." | tee -a $LOG
+   cat $RMAN_CONF > $RMAN_CMD
+   # DISABLED FOR STANDARD EDITION -Parallelize backup job by opening two channels towards backup device
+   alloc_dev_chan1="allocate channel r1 device type $RMAN_DEV MAXPIECESIZE $MAXPIECE"
+   alloc_dev_chan2="allocate channel r2 device type $RMAN_DEV MAXPIECESIZE $MAXPIECE"
+   if [ $OPTYPE != report -a $OPTYPE != resetconf -a $OPTYPE != spacearc ];then
+     echo "run {" >> $RMAN_CMD
+     echo "${alloc_dev_chan1};" >> $RMAN_CMD
+     #echo "${alloc_dev_chan2};" >> $RMAN_CMD
+   fi
+   chmod 660 $RMAN_CMD
+}
+
+rman_tail() {
+   if [ $OPTYPE != report -a $OPTYPE != resetconf -a $OPTYPE != spacearc ];then
+     echo "release channel r1;" >> $RMAN_CMD
+     #echo "release channel r2;" >> $RMAN_CMD
+     echo "}" >> $RMAN_CMD
+   fi
+}
+
+rman_query() {
+   $ORACLE_HOME/bin/rman target "/" CMDFILE=$RMAN_CMD >> $LOG
+   #cat $RMAN_CMD
+}
+
+notify() {
+   if [ "$TECHOPS" = "Y" ]; then
+     EMAIL="$EMAIL,$TECHOPSEMAIL"
+   fi
+   # If errors send alert and exit
+   ERR_TMP=$DIR_SCRIPTS/tmp/err_${PROG}_${OPTYPE}_${SID}
+   egrep -i 'error|ORA-|RMAN-' $LOG > $ERR_TMP
+
+   if [ -s $ERR_TMP -a "$ENV" = "PRD"]; then
+    if echo $ENV | grep PRD >> /dev/null; then
+      EMAIL="$EMAIL,$BREDEMAIL"
+    fi
+    echo >> $ERR_TMP
+    echo "$(date '+%d/%m/%Y (%H:%M:%S)')" >> $ERR_TMP
+    echo >> $ERR_TMP
+    echo "************************************************************************************************************" >> $ERR_TMP
+    echo "See logfile $LOG for more details." >> $ERR_TMP
+
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - ALERT: $OPTYPE FAILED!]" -t $ERR_TMP | tee -a $LOG
+    return
+   fi
+
+   echo > $MAIL_TMP
+   head -n 2 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep Executing $LOG >> $MAIL_TMP
+   grep Reseting $LOG >> $MAIL_TMP
+   grep Computing $LOG >> $MAIL_TMP
+   grep Purging $LOG >> $MAIL_TMP
+   grep Deleting $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep -m 1 "Starting backup" $LOG >> $MAIL_TMP
+   grep "input datafile" $LOG >> $MAIL_TMP
+   grep "channel r1:" $LOG >> $MAIL_TMP
+   grep -m 2 "Finished backup" $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   grep "Starting Control File" $LOG >> $MAIL_TMP
+   grep "Finished Control File" $LOG >> $MAIL_TMP
+   grep "Deleting" $LOG >> $MAIL_TMP
+   #grep "deleted archived log" $LOG >> $MAIL_TMP
+   grep "specification does not match" $LOG >> $MAIL_TMP
+   grep "Deleted" $LOG >> $MAIL_TMP
+   tail -n 2 $LOG >> $MAIL_TMP
+   echo >> $MAIL_TMP
+   echo "************************************************************************************************************" >> $MAIL_TMP
+   echo "See logfile $LOG for more details." >> $MAIL_TMP
+
+   echo >> $LOG
+   if [ $NOTIF = 'Y' ]; then
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - RMAN Backup $OPTYPE notification]" -t $MAIL_TMP | tee -a $LOG
+   fi
+}
+### Snapshot : backup as copy
+snap() {
+    echo "backup tag 'SNAPSHOT_DB_${currentdate}' as copy FORMAT '${FORMAT_DBF}' database;" >> $RMAN_CMD
+    echo "backup tag 'SNAPSHOT_CTL_${currentdate}' FORMAT '${FORMAT_CTL}' current controlfile;" >> $RMAN_CMD
+    echo "backup tag 'SNAPSHOT_SPFILE_${currentdate}' FORMAT '${FORMAT_SPF}' spfile;" >> $RMAN_CMD
+    echo "SQL 'alter system archive log current';" >> $RMAN_CMD
+}
+
+### full : full backup
+full() {
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='FULL_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+    echo "backup TAG 'FULL_DB_${currentdate}' FORMAT '${FORMAT_DBF}' database;" >> $RMAN_CMD
+    echo "backup current controlfile tag 'FULL_DB_${currentdate}' FORMAT '${FORMAT_CTL}';" >> $RMAN_CMD
+    echo "backup spfile tag 'FULL_DB_${currentdate}' FORMAT '${FORMAT_SPF}';" >> $RMAN_CMD
+    echo "sql \"alter system archive log current\";" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt expired backupset;" >> $RMAN_CMD
+    echo "delete noprompt expired archivelog all;" >> $RMAN_CMD
+    echo "delete noprompt obsolete;" >> $RMAN_CMD
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='FULL_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+}
+
+### full : level 0 incremental backup 
+inc0() {
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC0_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+    echo "crosscheck archivelog all;" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "backup incremental level 0 TAG 'INC0_DB_${currentdate}' FORMAT '${FORMAT_DBF}' database;" >> $RMAN_CMD
+    echo "backup current controlfile TAG 'INC0_DB_${currentdate}' FORMAT '${FORMAT_CTL}';" >> $RMAN_CMD
+    echo "backup spfile TAG 'INC0_DB_${currentdate}' FORMAT '${FORMAT_SPF}';" >> $RMAN_CMD
+    echo "sql \"alter system archive log current\";" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt expired backupset;" >> $RMAN_CMD
+    echo "delete noprompt expired archivelog all;" >> $RMAN_CMD
+    echo "delete noprompt obsolete;" >> $RMAN_CMD
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC0_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+}
+
+### cumulative : level 1 cumulative backup
+inc1() {
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC1_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+    echo "crosscheck archivelog all;" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "backup incremental level 1 cumulative TAG 'INC1_DB_${currentdate}' FORMAT '${FORMAT_DBF}' database;" >> $RMAN_CMD
+    echo "backup current controlfile tag 'INC1_DB_${currentdate}' FORMAT '${FORMAT_CTL}';" >> $RMAN_CMD
+    echo "backup spfile TAG 'INC1_DB_${currentdate}' FORMAT '${FORMAT_SPF}';" >> $RMAN_CMD
+    echo "sql \"alter system archive log current\";" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt expired backupset;" >> $RMAN_CMD
+    echo "delete noprompt expired archivelog all;" >> $RMAN_CMD
+    echo "delete noprompt obsolete;" >> $RMAN_CMD
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC1_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+}
+
+### differential : level 1 differential backup
+inc2() {
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC2_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+    echo "crosscheck archivelog all;" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "backup incremental level 1 TAG 'INC2_DB_${currentdate}' FORMAT '${FORMAT_DBF}' database;" >> $RMAN_CMD
+    echo "backup current controlfile tag 'INC2_DB_${currentdate}' FORMAT '${FORMAT_CTL}';" >> $RMAN_CMD
+    echo "backup spfile TAG 'INC2_DB_${currentdate}' FORMAT '${FORMAT_SPF}';" >> $RMAN_CMD
+    echo "sql \"alter system archive log current\";" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt expired backupset;" >> $RMAN_CMD
+    echo "delete noprompt expired archivelog all;" >> $RMAN_CMD
+    echo "delete noprompt obsolete;" >> $RMAN_CMD
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='INC2_DB_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+}
+
+### full : backup current archivelogs
+arc() {
+    echo "CROSSCHECK ARCHIVELOG ALL;" >> $RMAN_CMD
+    echo "BACKUP ARCHIVELOG ALL DELETE INPUT TAG='ARC_${currentdate}' FORMAT '${FORMAT_ARC}' ;" >> $RMAN_CMD
+    echo "backup current controlfile TAG 'ARC_${currentdate}' FORMAT '${FORMAT_CTL}';" >> $RMAN_CMD
+}
+
+delobs() {
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt expired backupset;" >> $RMAN_CMD
+    echo "delete noprompt expired archivelog all;" >> $RMAN_CMD
+    echo "delete noprompt obsolete;" >> $RMAN_CMD
+}
+
+delarc() {
+    echo "delete noprompt archivelog all;" >> $RMAN_CMD
+}
+
+arcdays() {
+    echo "CROSSCHECK ARCHIVELOG ALL;" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "delete noprompt backup of archivelog until time \"SYSDATE-${ARC_DAYS}\";" >> $RMAN_CMD
+    echo "delete noprompt archivelog until time \"SYSDATE-${ARC_DAYS}\" backed up 1 times to $RMAN_DEV;" >> $RMAN_CMD
+}
+
+report() {
+    echo "report schema;" >> $RMAN_CMD
+    echo "show all;" >> $RMAN_CMD
+    echo "crosscheck backup;" >> $RMAN_CMD
+    echo "list backup;" >> $RMAN_CMD
+    echo "crosscheck archivelog all;" >> $RMAN_CMD
+    echo "list expired backup;" >> $RMAN_CMD
+    echo "report obsolete;" >> $RMAN_CMD
+    echo "report need backup;" >> $RMAN_CMD
+    echo "report unrecoverable;" >> $RMAN_CMD
+}
+
+resetconf() {
+    cat $RMAN_CONF > $RMAN_CMD
+}
+
+
+############
+### Main ###
+############
+
+# Argument parsing
+while getopts :d:t:q arg
+do
+case $arg in
+  d)
+    SID=$OPTARG
+    ;;
+  t)
+    OPTYPE=$OPTARG
+    ;;
+  q)
+    NOTIF=N
+    ;;
+  \?)
+    usage
+    exit
+    ;;
+   :)
+    echo "Option $OPTARG requires an argument."
+    exit
+    ;;
+esac
+done
+
+# Check User
+check_user $USER $OUSER
+
+# Check input parameters
+check_parms
+
+# Check if database is accepting connections
+check_db
+
+# Initiate RUN script and allocate device channel when function does not use LIST command
+rman_head
+
+# RMAN script customization from chosen backup type 
+case $OPTYPE in
+snap)
+        echo "Executing snapshot of database $SID..." | tee -a $LOG
+        snap
+        ;;
+full)
+        arc
+        echo "Executing full backup of database $SID..." | tee -a $LOG
+        full
+        arc
+        ;;
+inc0)
+        TECHOPS=Y
+        echo "Executing full incremental backup of database $SID..." | tee -a $LOG
+        arcdays
+        inc0
+        arcdays
+        ;;
+inc1)
+        TECHOPS=Y
+        echo "Executing cumulative backup of database $SID..." | tee -a $LOG
+        arcdays
+        inc1
+        arcdays
+        ;;
+inc2)
+        TECHOPS=Y
+        echo "Executing differential backup of database $SID..." | tee -a $LOG
+        arcdays
+        inc2
+        arcdays
+        ;;
+arc)
+        arcdays
+        echo "Executing archivelog backup of database $SID..." | tee -a $LOG
+        arc
+        ;;
+delobs)
+        echo "Executing backup purge of database $SID..." | tee -a $LOG
+        delobs
+        ;;
+delarc)
+	echo "Deleting archivelogs of database $SID..." | tee -a $LOG
+	delarc
+	;;
+arcdays)
+        echo "Purging archivelogs older than $ARC_DAYS days for database $SID..." | tee -a $LOG
+        arcdays
+        ;;
+report)
+        echo "Executing rman report for database $SID..." | tee -a $LOG
+        report
+        ;;
+resetconf)
+        echo "Reseting RMAN config for database $SID..." | tee -a $LOG
+        resetconf
+        ;;
+spacearc)
+        echo "Computing archivelog used space for database $SID..." | tee -a $LOG
+        spacearc
+        ;;
+*)
+        usage
+        exit
+        ;;
+esac
+
+# close run block
+rman_tail
+
+# connect and run RMAN script
+rman_query
+
+# log file tail
+log_tail
+
+# Send notification mail
+notify
+exit
