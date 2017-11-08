@@ -41,7 +41,7 @@ notify() {
 
    # Send alert if errors found in log, ignoring ORA-39700
    if [ -s $ERR_TMP ]; then
-      LABEL="[$ENV DB - ALERT: RESTORE of database $SID FAILED!]" 
+      LABEL="[${SID}@${HOSTNAME} - ALERT: RESTORE of database $SID FAILED!]" 
       echo >> $ERR_TMP
       echo "$(date '+%d/%m/%Y (%H:%M:%S)')" >> $ERR_TMP
       echo >> $ERR_TMP
@@ -54,7 +54,7 @@ notify() {
 
    if [ "$NOTIF" = "Y" ]; then
       get_last_SCN
-      LABEL="[$ENV DB - RMAN Restore database $SID from PRD Backup Files Notification]"
+      LABEL="[${SID}@${HOSTNAME} - RMAN Restore database $SID from PRD Backup Files Notification]"
       echo "Last SCN: $LAST_SCN - Timestamp: $SCN_TIMESTAMP" > $MAIL_TMP
       echo "Last Sequence Number restored: $SEQUENCE - Timestamp: $LOG_TIMESTAMP" >> $MAIL_TMP
       echo "************************************************************************************************************" >> $MAIL_TMP

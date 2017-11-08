@@ -4,7 +4,6 @@ CHAIN_MAIL=$DIR_SCRIPTS/tmp/${CHAIN}_mail_inc0_${1}_$(date '+%Y.%m.%d_%H.%M')
 
 #env
 . $DIR_SCRIPTS/$1.conf
-EMAIL="$EMAIL,$TECHOPSEMAIL"
 
 # Mail body initialization
 echo > $CHAIN_MAIL
@@ -44,5 +43,5 @@ find $DIR_SCRIPTS/tmp -type f -mtime +3 | xargs rm -f
 
 # Notification email
 if echo $ENV | grep PRD >> /dev/null; then
- $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Full Backup notification]" -t $CHAIN_MAIL
+ $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[${SID}@${HOSTNAME} - Full Backup notification]" -t $CHAIN_MAIL
 fi

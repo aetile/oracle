@@ -120,7 +120,7 @@ notify() {
 
    echo >> $LOG
    if [ $NOTIF = 'Y' ]; then
-    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - Index Rebuild notification]" -t $MAIL_TMP | tee -a $LOG
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[${SID}@${HOSTNAME} - Index Rebuild notification]" -t $MAIL_TMP | tee -a $LOG
    fi
 }
 

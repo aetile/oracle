@@ -80,24 +80,18 @@ rman_query() {
 }
 
 notify() {
-   if [ "$TECHOPS" = "Y" ]; then
-     EMAIL="$EMAIL,$TECHOPSEMAIL"
-   fi
    # If errors send alert and exit
    ERR_TMP=$DIR_SCRIPTS/tmp/err_${PROG}_${OPTYPE}_${SID}
    egrep -i 'error|ORA-|RMAN-' $LOG > $ERR_TMP
 
    if [ -s $ERR_TMP -a "$ENV" = "PRD"]; then
-    if echo $ENV | grep PRD >> /dev/null; then
-      EMAIL="$EMAIL,$BREDEMAIL"
-    fi
     echo >> $ERR_TMP
     echo "$(date '+%d/%m/%Y (%H:%M:%S)')" >> $ERR_TMP
     echo >> $ERR_TMP
     echo "************************************************************************************************************" >> $ERR_TMP
     echo "See logfile $LOG for more details." >> $ERR_TMP
 
-    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - ALERT: $OPTYPE FAILED!]" -t $ERR_TMP | tee -a $LOG
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[${SID}@${HOSTNAME} - ALERT: $OPTYPE FAILED!]" -t $ERR_TMP | tee -a $LOG
     return
    fi
 
@@ -132,7 +126,7 @@ notify() {
 
    echo >> $LOG
    if [ $NOTIF = 'Y' ]; then
-    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[$ENV DB - RMAN Backup $OPTYPE notification]" -t $MAIL_TMP | tee -a $LOG
+    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "[${SID}@${HOSTNAME} - RMAN Backup $OPTYPE notification]" -t $MAIL_TMP | tee -a $LOG
    fi
 }
 ### Snapshot : backup as copy
@@ -300,21 +294,18 @@ full)
         arc
         ;;
 inc0)
-        TECHOPS=Y
         echo "Executing full incremental backup of database $SID..." | tee -a $LOG
         arcdays
         inc0
         arcdays
         ;;
 inc1)
-        TECHOPS=Y
         echo "Executing cumulative backup of database $SID..." | tee -a $LOG
         arcdays
         inc1
         arcdays
         ;;
 inc2)
-        TECHOPS=Y
         echo "Executing differential backup of database $SID..." | tee -a $LOG
         arcdays
         inc2

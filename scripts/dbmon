@@ -24,6 +24,7 @@ OPTYPE=TBS
 FORMAT=text
 NOTIF=Y
 SQL=Y
+LABEL="${SID}@${HOSTNAME}"
 
 source $DIR_SCRIPTS/dbmainlib.sh
 
@@ -56,13 +57,7 @@ check_parms() {
 }
 
 notify() {
-   if [ $NOTIF = 'Y' -a $MONITORING = 'ON' ]; then
-    if [ "$MONITORING" = "Y" ]; then
-     EMAIL="$EMAIL,$BREDEMAIL"
-    fi
-    if [ "$TECHOPS" = "Y" ]; then
-     EMAIL="$EMAIL,$TECHOPSEMAIL"
-    fi
+   if [ "$NOTIF" = "Y" -a "$MONITORING" = "Y" ]; then
     $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "$LABEL" -t $MAIL_TMP -f $FORMAT | tee -a $LOG
    fi
 }
@@ -70,20 +65,19 @@ notify() {
 isup() {
    SQL=N
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
-   LABEL="[$ENV DB - Instance STATUS]"
+   LABEL="[$LABEL - Instance STATUS]"
    cat $LOG > $MAIL_TMP
 }
 
 rman() {
-   #TECHOPS=Y
-   LABEL="[$ENV DB - RMAN Backup report]"
+   LABEL="[$LABEL - RMAN Backup report]"
    echo "set lines 200 pages 9999" >> $TMP
    cat $DIR_SCRIPTS/rman.sql >> $TMP
    echo exit >> $TMP
 }
 
 tbs() {
-   LABEL="[$ENV DB - Tablespace growth report]"
+   LABEL="[$LABEL - Tablespace growth report]"
    echo "set lines 200 pages 9999" >> $TMP
    cat $DIR_SCRIPTS/asm.sql >> $TMP
    cat $DIR_SCRIPTS/tbs.sql >> $TMP
@@ -97,7 +91,7 @@ dbcache() {
    echo exit >> $TMP
    $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    CACHE_HIT=`grep "%" $MAIL_TMP | cut -d '%' -f 2 | cut -d '.' -f 1`
-   LABEL="[$ENV DB - ALERT: ${CACHE_HIT}% DB Cache Hit Ratio!]"
+   LABEL="[$LABEL - ALERT: ${CACHE_HIT}% DB Cache Hit Ratio!]"
    if [ $CACHE_HIT -lt 90 ]; then
     echo "DB Cache Hit Ratio is ${CACHE_HIT}%" > $MAIL_TMP
     echo "*****************************************************************************" >> $MAIL_TMP
@@ -112,7 +106,7 @@ arc() {
    FORMAT=text
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
    FREE_ARC=`df | grep "$RMAN_DISK" | awk '{ print $4}' | cut -d '%' -f 1`
-   LABEL="[$ENV DB - ALERT: archivelog destination ${FREE_ARC}% FULL]"
+   LABEL="[$LABEL - ALERT: archivelog destination ${FREE_ARC}% FULL]"
    if [ $FREE_ARC -ge $ARC_FREE_THR ]; then
     echo "Archivelog destination is ${FREE_ARC}% full" > $MAIL_TMP
     echo "*****************************************************************************" >> $MAIL_TMP
@@ -134,7 +128,7 @@ asmarc() {
    echo exit >> $TMP
    $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    FREE_ARC=`grep ARC $MAIL_TMP | awk '{ print $8 }' | cut -d '%' -f 1`
-   LABEL="[$ENV DB - ALERT: archivelog destination ${FREE_ARC}% FULL]"
+   LABEL="[$LABEL - ALERT: archivelog destination ${FREE_ARC}% FULL]"
    if [ $FREE_ARC -ge $ARC_FREE_THR ]; then
     echo "Archivelog destination is ${FREE_ARC}% full" > $MAIL_TMP
     echo "*****************************************************************************" >> $MAIL_TMP
@@ -151,7 +145,7 @@ cpuw() {
    TMP_LOCK=${TMP_LOCK}_cpuw
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
    CWAITS=`vmstat | awk '{print $16}' | tail -n1`
-   LABEL="[$ENV DB - ALERT: ${CWAITS}% CPU Waits!]"
+   LABEL="[$LABEL - ALERT: ${CWAITS}% CPU Waits!]"
    if [ ! -f $TMP_LOCK ]; then
     echo 0 > $TMP_LOCK
    fi
@@ -173,7 +167,7 @@ swap() {
    FORMAT=text
    TMP_LOCK=${TMP_LOCK}_swap
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
-   LABEL="[$ENV DB - ALERT: Active Swap-in!]"
+   LABEL="[$LABEL - ALERT: Active Swap-in!]"
    SWAPIN=`vmstat -S K | awk '{print $8}' | tail -n1`
    if [ ! -f $TMP_LOCK ]; then
     echo 0 > $TMP_LOCK
@@ -195,7 +189,7 @@ dbcopy() {
    SQL=N
    NOTIF=N
    FORMAT=text
-   LABEL="[$ENV DB - DataCopy Block Change Tracking Report]"
+   LABEL="[$LABEL - DataCopy Block Change Tracking Report]"
    echo "set pages 0" > $TMP
    echo "ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy hh24:mi:ss';" >> $TMP
    echo "SELECT 'STARTUP=' || TO_CHAR(TRUNC(startup_time)) from v\$instance;" >> $TMP
@@ -211,7 +205,7 @@ heartbeat() {
    NOTIF=N
    PING_RESULT=Success
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
-   LABEL="[$ENV DB - ALERT: heartbeat to $PING FAILED!]"
+   LABEL="[$LABEL - ALERT: heartbeat to $PING FAILED!]"
    ping -c 2 $PING > $MAIL_TMP
    if [ $? -ne 0 ]; then
      NOTIF=Y
@@ -230,7 +224,7 @@ data() {
    $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    TBS_PCT=`grep % $MAIL_TMP | awk '{print $2}' | cut -d '%' -f 1`
    TBS_GB=`grep % $MAIL_TMP | awk '{print $3}'`
-   LABEL="[$ENV DB - ALERT: Tablespace KYR_DATA: only ${TBS_GB}GB LEFT!]"
+   LABEL="[$LABEL - ALERT: Tablespace KYR_DATA: only ${TBS_GB}GB LEFT!]"
    #if [ $TBS_PCT -ge $TBS_PCT_FULL ]; then
    if [ $TBS_GB -le $TBS_GB_THRS ]; then
     NOTIF=Y
@@ -247,7 +241,7 @@ temp() {
    $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    TBS_PCT=`grep % $MAIL_TMP | awk '{print $2}' | cut -d '%' -f 1`
    TBS_GB=`grep % $MAIL_TMP | awk '{print $3}'`
-   LABEL="[$ENV DB - ALERT: Tablespace TEMP: only ${TBS_GB}GB LEFT!]"
+   LABEL="[$LABEL - ALERT: Tablespace TEMP: only ${TBS_GB}GB LEFT!]"
    #if [ $TBS_PCT -ge $TEMP_PCT_FULL ]; then
    if [ $TBS_GB -le $TEMP_GB_THRS ]; then
     NOTIF=Y
@@ -259,14 +253,14 @@ oralert() {
    NOTIF=N
    if echo $ENV | grep PRD >> /dev/null; then MONITORING=Y; fi;
    FORMAT=text
-   LABEL="[$ENV DB - ALERT: errors found in ALERT LOG!]"
+   LABEL="[$LABEL - ALERT: errors found in ALERT LOG!]"
    cat $DIR_SCRIPTS/oralert.sql > $TMP
    echo exit >> $TMP
    $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    #if [ -s $MAIL_TMP ]; then
    if ! cat $MAIL_TMP | grep "ORA-" | egrep -v "$ORA_EXCLUDE" $MAIL_TM >> /dev/null; then MONITORING=N; fi;
    if ! grep "no rows selected" $MAIL_TMP >> /dev/null; then
-     MONITORING=ON
+     MONITORING=Y
      NOTIF=Y
    fi
 }
@@ -280,9 +274,9 @@ growth() {
    echo exit >> $TMP
     $ORACLE_HOME/bin/sqlplus / as sysdba @$TMP > $MAIL_TMP
    DELTA_MB=`grep KYR_DATA $MAIL_TMP | awk '{print $6}'`
-   LABEL="[$ENV DB - ALERT: ${DELTA_MB}MB weekly DATA GROWTH!]"
+   LABEL="[$LABEL - ALERT: ${DELTA_MB}MB weekly DATA GROWTH!]"
    if [ $DELTA_MB -ge $MB_GROWTH_THRS ]; then
-     MONITORING=ON
+     MONITORING=Y
      NOTIF=Y
    fi
 }
@@ -295,7 +289,7 @@ oracpu() {
     /usr/bin/top -b -n 1 -u $OUSER | awk -v var="$OUSER" 'NR>7 { sum += $9; }; END { print var "\t\t" sum; }';
    done | sort -n `echo $var` > $TMP
    CPU_PCT=`cat $TMP | awk '{ sum += $2 } END {print sum}'`
-   LABEL="[$ENV DB - ALERT: ${CPU_PCT}% System CPU usage!]"
+   LABEL="[$LABEL - ALERT: ${CPU_PCT}% System CPU usage!]"
    if [ $CPU_PCT -ge $ORA_CPU_PCT_THRS ]; then
     NOTIF=Y
    fi
@@ -309,7 +303,7 @@ syscpu() {
     /usr/bin/top -b -n 1 -u $OUSER | awk -v var="$OUSER" 'NR>7 { sum += $9; }; END { print var "\t\t" sum; }';
    done | sort -n `echo $var` > $TMP
    CPU_PCT=`cat $TMP | awk '{ sum += $2 } END {print sum}'`
-   LABEL="[$ENV DB - ALERT: ${CPU_PCT}% User CPU usage!]"
+   LABEL="[$LABEL - ALERT: ${CPU_PCT}% User CPU usage!]"
    if [ $CPU_PCT -ge $SYS_CPU_PCT_THRS ]; then
     NOTIF=Y
    fi
@@ -338,7 +332,7 @@ avgcpu() {
      *)
       ;;
    esac
-   LABEL="[$ENV DB - ALERT: ${MESSAGE} over ${CPU_THRS}%!]"
+   LABEL="[$LABEL - ALERT: ${MESSAGE} over ${CPU_THRS}%!]"
 
    /usr/bin/sar -u -f /var/log/sa/sa$DAY_BEFORE >> $LOG
    /usr/bin/sar -u -f /var/log/sa/sa$DAY_BEFORE | grep Average > $TMP
@@ -367,7 +361,7 @@ loadavg() {
    /usr/bin/sar -q -f /var/log/sa/sa$DAY_BEFORE | grep Average > $TMP
    /usr/bin/sar -q -f /var/log/sa/sa$DAY_BEFORE | grep RESTART > $MAIL_TMP
    echo >> $MAIL_TMP
-   LABEL="[$ENV DB - ALERT: System Load Average over $AVG_SYS_LOAD_THRS!]"
+   LABEL="[$LABEL - ALERT: System Load Average over $AVG_SYS_LOAD_THRS!]"
 
    while read line
    do
@@ -390,7 +384,7 @@ loadavg() {
 vg() {
    SQL=N
    NOTIF=N
-   LABEL="[$ENV DB - ALERT: Free space in Volume Groups!]"
+   LABEL="[$LABEL - ALERT: Free space in Volume Groups!]"
    if [ "$OUSER" != "root" ]; then
     echo "This option requires root privilege. Use -u option]"
     usage
@@ -426,7 +420,7 @@ check_mk() {
    SQL=N
    NOTIF=N
    MONITORING=N
-   LABEL="[$ENV DB - ALERT: Check MK agent in FAILED status!]"
+   LABEL="[$LABEL - ALERT: Check MK agent in FAILED status!]"
    /usr/bin/check_mk_agent > $MAIL_TMP
    if [ $? -ne 0 ]; then
     NOTIF=Y
@@ -436,7 +430,7 @@ check_mk() {
 ganglia() {
    SQL=N
    NOTIF=N
-   LABEL="[$ENV DB - ALERT: Ganglia daemon is DOWN!]"
+   LABEL="[$LABEL - ALERT: Ganglia daemon is DOWN!]"
    /sbin/service gmond status > $MAIL_TMP
    if ! grep "is running" $MAIL_TMP; then
     NOTIF=Y
@@ -449,7 +443,7 @@ ganglia() {
 }
 
 dbcheck() {
-   LABEL="[$ENV DB - DB health check report]"
+   LABEL="[$LABEL - DB health check report]"
    echo "set pages 0 pages 9999" >> $TMP
    echo "col host_name for a50" >> $TMP
    echo "SELECT i.INSTANCE_NAME, i.INSTANCE_NUMBER, d.dbid, i.HOST_NAME, d.CREATED, i.STARTUP_TIME, i.VERSION, l.CPU_COUNT_CURRENT CPUs, l.CPU_CORE_COUNT_CURRENT Cores, l.CPU_SOCKET_COUNT_CURRENT Sockets, TO_CHAR(round(m.bytes/1024/1024/1024,2)) || 'Gb' Memory FROM v\$instance i, v\$database d, v\$license l, v\$sgainfo m WHERE m.name = 'Maximum SGA Size';" >> $TMP
@@ -523,7 +517,7 @@ while getopts :d:t:qf:p:u:w arg
        OUSER=$OPTARG
        ;;
      w)
-       FORCE_MONITORING=YES
+       FORCE_MONITORING=Y
        ;;
      \?)
        echo $arg
@@ -555,7 +549,7 @@ check_parms
 check_db $OUSER
 
 # Disable monitoring
-if [ "$MONITORING" != "ON" ]; then
+if [ "$MONITORING" != "Y" ]; then
   NOTIF=N
 fi
 

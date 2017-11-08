@@ -23,7 +23,7 @@ set_oraenv() {
    log_head
    echo "Setting Oracle environment..." | tee -a $LOG
    cd $HOME
-   export ORACLE_SID=$CLUSTER_NODE
+   export ORACLE_SID=$SID
    . /usr/local/bin/oraenv
    echo "done." | tee -a $LOG
    echo
@@ -40,12 +40,6 @@ fi
 
 send_mail () {
   if [ "$MONITORING" = "Y" ]; then
-   EMAIL="$EMAIL,$BREDEMAIL"
-  fi
-  if [ "$TECHOPS" = "Y" ]; then
-   EMAIL="$EMAIL,$TECHOPSEMAIL"
-  fi
-  if [ $MONITORING = 'ON' ]; then
    $DIR_SCRIPTS/smail -d "$EMAIL" -s $SENDER -m $SMTP -b "$LABEL" -t $MAIL_TMP -f $FORMAT | tee -a $LOG
   fi
 }
@@ -57,8 +51,8 @@ check_db() {
    log_head
 
    # Forced monitoring option
-   if [ $FORCE_MONITORING -a $FORCE_MONITORING = YES ]; then
-    MONITORING=ON
+   if [ "$FORCE_MONITORING" -a "$FORCE_MONITORING" = "Y" ]; then
+    MONITORING=Y
    fi
 
    # If user is not oracle, don't check db
@@ -99,8 +93,7 @@ check_db() {
    fi
    if [ $oracle_conn -ne 0 ]; then
      if [ $oracle_pmon -lt 1 ]; then
-       EMAIL="$EMAIL,$BREDEMAIL"
-       LABEL="[$ENV DB - ALERT: DB Instance is DOWN!]"
+       LABEL="[$LABEL - ALERT: DB Instance is DOWN!]"
        cat $LOG > $MAIL_TMP
        echo >> $MAIL_TMP
        ps -aef | grep pmon >> $MAIL_TMP
@@ -108,7 +101,7 @@ check_db() {
        echo "Database is DOWN. Aborting." | tee -a $LOG
      else
        EMAIL="$EMAIL"
-       LABEL="[$ENV DB - ALERT: DB Instance NOT AVAILABLE!]"
+       LABEL="[$LABEL - ALERT: DB Instance NOT AVAILABLE!]"
        cat $LOG > $MAIL_TMP
        echo >> $MAIL_TMP
        send_mail
@@ -118,7 +111,7 @@ check_db() {
      exit 2
    else
      if [ $oracle_idle -gt 0 ]; then
-       LABEL="[$ENV DB - ALERT: DB Instance not MOUNTED!]"
+       LABEL="[$LABEL - ALERT: DB Instance not MOUNTED!]"
        cat $LOG > $MAIL_TMP
        echo >> $MAIL_TMP
        send_mail
@@ -131,7 +124,7 @@ check_db() {
        DB_STATUS=`cat $MAIL_TMP | cut -d ':' -f 2`
        case $DB_STATUS in
          MOUNT*)
-           LABEL="[$ENV DB - ALERT: DB Instance not OPEN!]"
+           LABEL="[$LABEL - ALERT: DB Instance not OPEN!]"
            cat $LOG > $MAIL_TMP
            echo >> $MAIL_TMP
            send_mail
@@ -147,7 +140,7 @@ check_db() {
    fi
 
    if [ $oracle_lsnr -ne 0 ]; then
-     LABEL="[$ENV DB - WARNING: DB Listener error]"
+     LABEL="[$LABEL - WARNING: DB Listener error]"
      cat $LOG > $MAIL_TMP
      echo >> $MAIL_TMP
      lsnrctl status $LSNR_NAME >> $MAIL_TMP
