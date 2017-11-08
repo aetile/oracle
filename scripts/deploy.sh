@@ -94,6 +94,7 @@ unpack() {
    #cp sppurpkg.sql /home/$OUSER/scripts/
    #cp SID.conf /home/$OUSER/scripts/$SID.conf
    cp *.conf /home/$OUSER/scripts/
+   mv home/$OUSER/scripts/rman.conf home/$OUSER/scripts/rman_${SID}.conf
    cp *.cron /home/$OUSER/scripts/
    cp *.sql /home/$OUSER/scripts/
    ln -s $DIR_SCRIPTS/sendEmail $DIR_SCRIPTS/sendEmail.pl

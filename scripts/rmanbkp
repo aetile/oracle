@@ -55,13 +55,30 @@ check_parms() {
 rman_head() {
    echo "Initiating backup..." | tee -a $LOG
    cat $RMAN_CONF > $RMAN_CMD
-   # DISABLED FOR STANDARD EDITION -Parallelize backup job by opening two channels towards backup device
-   alloc_dev_chan1="allocate channel r1 device type $RMAN_DEV MAXPIECESIZE $MAXPIECE"
-   alloc_dev_chan2="allocate channel r2 device type $RMAN_DEV MAXPIECESIZE $MAXPIECE"
+   case $RMAN_DEV in
+     DISK)
+       FORMAT_DBF="${RMAN_DISK}/${OPTYPE}_%d_%T_%U"
+       FORMAT_CTL="${RMAN_DISK}/${OPTYPE}_ctl_%d_%T_%U"
+       FORMAT_SPF="${RMAN_DISK}/${OPTYPE}_spfile_%d_%T_%U"
+       FORMAT_ARC="${RMAN_DISK}/archivelog/${OPTYPE}_arc_%d_%T_%U"
+       FORMAT_AUTO="${RMAN_DISK}/autobackup/auto_ctl_%F"
+       ;;
+     SBT|SBT_TAPE)
+       RMAN_DEV="${RMAN_DEV} parms='SBT_LIBRARY=${SBT_LIB}'"
+       ;;
+     *)
+       echo "Wrong RMAN device type. Exiting" | tee -a $LOG
+       exit
+       ;;
+   esac
+
+   # Allocate RMAN channels
    if [ $OPTYPE != report -a $OPTYPE != resetconf -a $OPTYPE != spacearc ];then
      echo "run {" >> $RMAN_CMD
-     echo "${alloc_dev_chan1};" >> $RMAN_CMD
-     #echo "${alloc_dev_chan2};" >> $RMAN_CMD
+     while [ $i -le $NB_CHAN ]
+     do
+       echo "allocate channel r${i} device type $RMAN_DEV MAXPIECESIZE $MAXPIECE" >> $RMAN_CMD
+     done
    fi
    chmod 660 $RMAN_CMD
 }
@@ -283,67 +300,67 @@ rman_head
 
 # RMAN script customization from chosen backup type 
 case $OPTYPE in
-snap)
-        echo "Executing snapshot of database $SID..." | tee -a $LOG
-        snap
-        ;;
-full)
-        arc
-        echo "Executing full backup of database $SID..." | tee -a $LOG
-        full
-        arc
-        ;;
-inc0)
-        echo "Executing full incremental backup of database $SID..." | tee -a $LOG
-        arcdays
-        inc0
-        arcdays
-        ;;
-inc1)
-        echo "Executing cumulative backup of database $SID..." | tee -a $LOG
-        arcdays
-        inc1
-        arcdays
-        ;;
-inc2)
-        echo "Executing differential backup of database $SID..." | tee -a $LOG
-        arcdays
-        inc2
-        arcdays
-        ;;
-arc)
-        arcdays
-        echo "Executing archivelog backup of database $SID..." | tee -a $LOG
-        arc
-        ;;
-delobs)
-        echo "Executing backup purge of database $SID..." | tee -a $LOG
-        delobs
-        ;;
-delarc)
-	echo "Deleting archivelogs of database $SID..." | tee -a $LOG
-	delarc
-	;;
-arcdays)
-        echo "Purging archivelogs older than $ARC_DAYS days for database $SID..." | tee -a $LOG
-        arcdays
-        ;;
-report)
-        echo "Executing rman report for database $SID..." | tee -a $LOG
-        report
-        ;;
-resetconf)
-        echo "Reseting RMAN config for database $SID..." | tee -a $LOG
-        resetconf
-        ;;
-spacearc)
-        echo "Computing archivelog used space for database $SID..." | tee -a $LOG
-        spacearc
-        ;;
-*)
-        usage
-        exit
-        ;;
+  snap)
+    echo "Executing snapshot of database $SID..." | tee -a $LOG
+    snap
+    ;;
+  full)
+    arc
+    echo "Executing full backup of database $SID..." | tee -a $LOG
+    full
+    arc
+    ;;
+  inc0)
+    echo "Executing full incremental backup of database $SID..." | tee -a $LOG
+    arcdays
+    inc0
+    arcdays
+    ;;
+  inc1)
+    echo "Executing cumulative backup of database $SID..." | tee -a $LOG
+    arcdays
+    inc1
+    arcdays
+    ;;
+  inc2)
+    echo "Executing differential backup of database $SID..." | tee -a $LOG
+    arcdays
+    inc2
+    arcdays
+    ;;
+  arc)
+    arcdays
+    echo "Executing archivelog backup of database $SID..." | tee -a $LOG
+    arc
+    ;;
+  delobs)
+    echo "Executing backup purge of database $SID..." | tee -a $LOG
+    delobs
+    ;;
+  delarc)
+    echo "Deleting archivelogs of database $SID..." | tee -a $LOG
+    delarc
+    ;;
+  arcdays)
+    echo "Purging archivelogs older than $ARC_DAYS days for database $SID..." | tee -a $LOG
+    arcdays
+    ;;
+  report)
+    echo "Executing rman report for database $SID..." | tee -a $LOG
+    report
+    ;;
+  resetconf)
+    echo "Reseting RMAN config for database $SID..." | tee -a $LOG
+    resetconf
+    ;;
+  spacearc)
+    echo "Computing archivelog used space for database $SID..." | tee -a $LOG
+    spacearc
+    ;;
+  *)
+    usage
+    exit
+    ;;
 esac
 
 # close run block
