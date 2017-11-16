@@ -1,2 +1,2 @@
-00 22 * * 6 root su -l oracle -c "/home/oracle/scripts/backup_inc0 SID_"
-00 22 * * 1-5,7 root su -l oracle -c "/home/oracle/scripts/backup_inc2 SID_"
+00 22 * * 6 root su -l oracle -c "/home/oracle/scripts/backup_inc0 {{ item.0.oracle_db_name }}"
+00 22 * * 1-5,7 root su -l oracle -c "/home/oracle/scripts/backup_inc2 {{ item.0.oracle_db_name }}"

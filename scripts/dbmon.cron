@@ -1,18 +1,18 @@
-0 8 * * 1 root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t dbcheck -f html"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t oralert"
-59 7 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t kyr_data"
-5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t temp"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t avgoracpu"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t avgsyscpu"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t avgiocpu"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t loadavg"
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t check_mk"
-0 8 * * * root /home/oracle/scripts/dbmon -d SID_ -t ganglia
-0 8 * * * root /home/oracle/scripts/dbmon -d SID_ -t vg
-0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t tbs -f html"
-0 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t asmarc -f html"
+0 8 * * 1 root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t dbcheck -f html"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t oralert"
+59 7 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t data"
+5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t temp"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t avgoracpu"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t avgsyscpu"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t avgiocpu"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t loadavg"
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t check_mk"
+0 8 * * * root /home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t ganglia
+0 8 * * * root /home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t vg
+0 8 * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t tbs -f html"
+0 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t asmarc -f html"
 0 8 * * * root find /opt/app/oracle/11.2.0.4/grid/rdbms/audit/ -type f -mtime +3 | xargs rm -f 2>&1 > /dev/null
 0 8 * * * root find /opt/app/oracle/11.2.0.4/base/admin/SID_/adump/ -type f -mtime +3 | xargs rm -f 2>&1 > /dev/null
-*/5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t cpuw"
-*/5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t swap"
-15 8 * * 1 root su -l oracle -c "/home/oracle/scripts/dbmon -d SID_ -t rman -f html"
+*/5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t cpuw"
+*/5 * * * * root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t swap"
+15 8 * * 1 root su -l oracle -c "/home/oracle/scripts/dbmon -d "{{ item.0.oracle_db_name }}" -t rman -f html"

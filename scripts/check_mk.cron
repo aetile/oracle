@@ -1,1 +1,1 @@
-*/5 * * * * root rm -f /etc/check_mk/oracle_SID_.cache
+*/5 * * * * root rm -f "/etc/check_mk/oracle_{{ item.0.oracle_db_name }}.cache"
